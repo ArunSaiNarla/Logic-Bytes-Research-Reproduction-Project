@@ -284,7 +284,7 @@ public class MainTransform extends MyTransformBase {
     }
 
     return allPotentialStatusCodes;
-  }
+  }}
 
   @Override
   protected void internalTransform(String phaseName, Map<String, String> options) {
@@ -686,76 +686,90 @@ public class MainTransform extends MyTransformBase {
       }
 
       // add parent params to firstBind
-      {
-        Triple<String, ArrayList<EndPointParamInfo>, String> trip =allPathsBound.get(firstBind);
-        
-        for(EndPointParamInfo eppI: trip.getMiddle()){
-          if(endPointOperationObj.parameters.stream().anyMatch(p -> p.name.equals(eppI.name))){
-            continue;
-          }
-
-          ParameterObj parameterObjI = endPointOperationObj.createParameterObj(eppI);
-          parameterObjI.createSchema(eppI.type);
+      public class MainTransform extends MyTransformBase {
+        protected ArrayList<SootField> UIDToGlobal = new ArrayList<>();
+        protected HashMap<SootField, GlobalVarInfo> globalMap = new HashMap<>();
+        private static Logger logger = LoggerFactory.getLogger(MainTransform.class);
+        public Path outputFile;
+        protected int operationIdCnt = 0;
+    
+        public MainTransform(PreprocessFramework preprocessResult, String outputFilePath) {
+            super(preprocessResult, false);
+            this.outputFile = Paths.get(outputFilePath);
         }
-
-      }
-
-
-    }
-
-    StaticVarAssignment SVA = new StaticVarAssignment(this.CHA_CG, globalMap.keySet());
-
-    for(Map.Entry<SootField, GlobalVarInfo> kv: globalMap.entrySet()){
-      SootField g=kv.getKey();
-      GlobalVarInfo varInfo = kv.getValue();
-
-      ArrayList<StaticExampleLoc> l=SVA.result.get(g);
-
-      if(l!=null){
-        varInfo.locs=l;
-      }
-
-      specObj.components.globalsWithStaticVarAssign.put(varInfo.id, varInfo);
-    }
-
-    GlobalVarInterdependency globalInter=GlobalVarInterdependency.computeGlobalInterdepend(globalToWriters, globalToReaders);
-
-    TreeMap<Integer, GlobalInterDepItemObj> interdependency = specObj.components.interDependencies.interdependency;
-    for(Map.Entry<GlobalVarInfo, Pair<ArrayList<EndPointMethodInfo>, ArrayList<EndPointMethodInfo>>> kv: globalInter.interdependency.entrySet()){
-      GlobalVarInfo globaVarInfo=kv.getKey();
-      ArrayList<EndPointMethodInfo> writers=kv.getValue().getLeft();
-      ArrayList<EndPointMethodInfo> readers=kv.getValue().getRight();
-
-      ReferenceObj globalVarInfoRef=globaVarInfo.refToMe;
-
-      HashMap<String, ReferenceObj> writerRefs=new HashMap<>();
-      for(EndPointMethodInfo wr: writers){
-        ArrayList<Triple<String, String, String>> ops = endpointToPathsToCopies.get(wr);
-        assert ops!=null;
-
-        for(Triple<String, String, String> op: ops){
-          String escapedPath=op.getMiddle().replace("/", "~1");
-          String componentParentPath=String.format("#/paths/%s/%s", escapedPath, op.getRight());
-
-          writerRefs.put(op.getLeft(), new ReferenceObj(componentParentPath));
+    
+        String getNewOperationId() {
+            return String.format("em%d", operationIdCnt++);
         }
-      }
-
-      HashMap<String, ReferenceObj> readerRefs=new HashMap<>();
-      for(EndPointMethodInfo rr: readers){
-        ArrayList<Triple<String, String, String>> ops = endpointToPathsToCopies.get(rr);
-        assert ops!=null;
-
-        for(Triple<String, String, String> op: ops){
-          String escapedPath=op.getMiddle().replace("/", "~1");
-          String componentParentPath=String.format("#/paths/%s/%s", escapedPath, op.getRight());
-
-          readerRefs.put(op.getLeft(), new ReferenceObj(componentParentPath));
+    
+        static void updateEmptyEndPointParamName(ArrayList<EndPointParamInfo> paramInfo, Map<Integer, String> passParamName, Map<Integer, ParameterObj> paramSMap) {
+            for (EndPointParamInfo pI : paramInfo) {
+                String namePass = passParamName.get(pI.index);
+                if (pI.name.isEmpty() && namePass != null && !namePass.isEmpty()) {
+                    pI.name = namePass;
+                    logger.debug("Updated name for EPP {}: {}", pI.index, pI.name);
+                    ParameterObj param = paramSMap.get(pI.index);
+                    if (param != null) {
+                        param.name = namePass;
+                    }
+                }
+            }
         }
-      }
-
-      interdependency.put(globaVarInfo.id, new GlobalInterDepItemObj(globalVarInfoRef, readerRefs, writerRefs));
-    }
+    
+        TreeMap<Integer, ParameterObj> createParams(ArrayList<EndPointParamInfo> paramInfo, EndPointOperationObj endPointOperationObj, EndPointMethodInfo EPInfo) {
+            TreeMap<Integer, ParameterObj> paramSMap = new TreeMap<>();
+            for (EndPointParamInfo pI : paramInfo) {
+                if (pI.in == EndPointParamInfo.paramLoction.formData || pI.in == EndPointParamInfo.paramLoction.body) {
+                    endPointOperationObj.createRequestBodyParamObj(pI);
+                    continue;
+                }
+                ParameterObj parameterObj = endPointOperationObj.createParameterObj(pI);
+                ParamSchemaObj schemaObj = parameterObj.createSchema(pI.type);
+                if (pI.defaultValue != null) {
+                    schemaObj.setDefault(pI.defaultValue);
+                }
+                paramSMap.put(pI.index, parameterObj);
+            }
+            logger.info("Total number of endpoint parameters for this method detected: {}", paramInfo.size());
+            ArrayList<String> reqParams = ExtractParamFromReq.extractParamFromRequest(Scene.v().getCallGraph(), EPInfo);
+            for (String paramName : reqParams) {
+                endPointOperationObj.createRequestBodyParamObj(paramName, "string");
+            }
+            if (!reqParams.isEmpty()) {
+                logger.info("{} endpoint parameters in request body", reqParams.size());
+            } else {
+                for (int i = 0; i < EPInfo.method.getParameterCount(); ++i) {
+                    if (!paramSMap.containsKey(i)) {
+                        HashMap<String, String> reqParamNameAndTypes = RequestBodyParamGen.toReqParamNameAndTypes(EPInfo.method.getParameterType(i), this.preprocessResult.frameworkData.packagePrefix);
+                        if (reqParamNameAndTypes != null && !reqParamNameAndTypes.isEmpty()) {
+                            for (Map.Entry<String, String> kw : reqParamNameAndTypes.entrySet()) {
+                                endPointOperationObj.createRequestBodyParamObj(kw.getKey(), kw.getValue());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            return paramSMap;
+        }
+    
+        @Override
+        protected void internalTransform(String phaseName, Map<String, String> options) {
+            icfg = new JimpleBasedInterproceduralCFG();
+            printerSet = new HashMap<>();
+            bodyToLoopInfoCache = new HashMap<>();
+    
+            buildCHACallGraph();
+    
+            SpecObj specObj = new SpecObj();
+            int nEP = this.preprocessResult.endPointMethodData.size();
+            logger.info("Total # of endpoint methods detected: " + nEP);
+    
+            HashMap<GlobalVarInfo, ArrayList<EndPointMethodInfo>> globalToWriters = new HashMap<>();
+            HashMap<GlobalVarInfo, ArrayList<EndPointMethodInfo>> globalToReaders = new HashMap<>();
+    
+            HashMap<EndPointMethodInfo, ArrayList<Triple<String, String, String>>> endpointToPathsToCopies = new HashMap<>();
+    
 
 
     Gson gson=SpecGen.getSpecBuilder();
@@ -767,3 +781,4 @@ public class MainTransform extends MyTransformBase {
     }
   }
 }
+    }
