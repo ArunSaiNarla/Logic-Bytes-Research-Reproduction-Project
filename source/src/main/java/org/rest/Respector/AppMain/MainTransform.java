@@ -284,7 +284,8 @@ public class MainTransform extends MyTransformBase {
     }
 
     return allPotentialStatusCodes;
-  }}
+  }
+}}
 
   @Override
   protected void internalTransform(String phaseName, Map<String, String> options) {
@@ -781,4 +782,3 @@ public class MainTransform extends MyTransformBase {
     }
   }
 }
-    }
